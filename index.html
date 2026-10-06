@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Goat Trail</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#4f6e35; --card:#2c3a44; --ink:#f3ead6; --muted:#b9c3c9; --gold:#e7b94c; --btn-ink:#2c3a44;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){ --bg:#2d4020; --card:#1f2a31; --ink:#efe6d2; --muted:#9fabb2; }
+}
+:root[data-theme="dark"]{ --bg:#2d4020; --card:#1f2a31; --ink:#efe6d2; --muted:#9fabb2; }
+*,*::before,*::after{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Fredoka",ui-rounded,"Segoe UI",system-ui,sans-serif;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+#wrap{position:relative;width:100%;height:100%}
+canvas{display:block;width:100%;height:100%}
+.overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(20,28,22,.45)}
+.overlay[hidden]{display:none}
+.card{background:var(--card);color:var(--ink);max-width:360px;width:100%;padding:24px 22px 22px;border-radius:22px 22px 22px 6px;box-shadow:0 10px 0 rgba(0,0,0,.25)}
+.card h1{margin:0 0 6px;font-size:2.4rem;line-height:1;font-weight:600;letter-spacing:-.01em;color:var(--gold)}
+.card p{margin:10px 0;line-height:1.45;font-size:1rem;color:var(--ink)}
+.card .small{color:var(--muted);font-size:.92rem}
+.key{display:inline-block;width:.8em;height:.8em;border-radius:50%;vertical-align:-.05em;margin-right:4px}
+button{font:inherit;font-weight:600;font-size:1.1rem;margin-top:14px;width:100%;padding:12px;border:0;border-radius:14px;background:var(--gold);color:var(--btn-ink);cursor:pointer}
+button:focus-visible{outline:3px solid var(--ink);outline-offset:3px}
+.stars{font-size:1.8rem;letter-spacing:.15em;color:var(--gold);margin:4px 0 2px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div class="overlay" id="menu">
+    <div class="card">
+      <h1>Goat Trail</h1>
+      <p>Walk your twelve goats down the mountain to the pen before sundown, and fatten them up on the way.</p>
+      <p class="small">On a phone, touch anywhere and slide your thumb like a joystick. With a mouse, hold to walk toward the cursor. Arrow keys or WASD work too. Goats step away from you and stick to the trail. Stride toward them to drive them; move slowly to slip past and get behind them.</p>
+      <p class="small">
+        <span class="key" style="background:#7fae4b"></span>Meadow is good.
+        <span class="key" style="background:#f2f2f2"></span>Clover is best.
+        <span class="key" style="background:#f0c93c"></span>Flowers are tasty.
+        <span class="key" style="background:#7a4d8f"></span>Bitterweed makes goats sick, so herd them past it.
+      </p>
+      <button id="startBtn">Start the walk</button>
+    </div>
+  </div>
+  <div class="overlay" id="end" hidden>
+    <div class="card" id="endCard"></div>
+  </div>
+</div>
+<script>
+(() => {
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const WW = 600, WH = 5200, HW = 72, TOTAL = 270, FEAR_R = 140, DRIVE_R = 250, HERD_SPEED = 170;
+const PEN = { x0: 190, x1: 410, y0: WH - 360, y1: WH - 130, g0: 258, g1: 342 };
+let W, H, DPR, scale, offX;
+
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  scale = Math.min(W / WW, Math.max(0.6, H / 720));
+  offX = (W - WW * scale) / 2;
+}
+window.addEventListener('resize', resize); resize();
+
+function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+function taper(y) { return clamp(Math.min((y - 150) / 400, (PEN.y0 - 150 - y) / 500), 0, 1); }
+function trailX(y) { return 300 + taper(y) * (150 * Math.sin(y / 460) + 55 * Math.sin(y / 190 + 1.3)); }
+
+const TYPES = {
+  meadow:  { base: '#86b552', blade: '#4d8a2a', value: 1.0, flecks: null },
+  clover:  { base: '#8cc062', blade: '#3d7f34', value: 1.6, flecks: ['#ffffff', '#f6d6e4'] },
+  flowers: { base: '#93b85c', blade: '#4f8a30', value: 1.25, flecks: ['#f0c93c', '#e46a5a', '#8e7fd6'] },
+  bitter:  { base: '#6f7a4c', blade: '#4f5a2c', value: -1, flecks: ['#7a4d8f', '#5b3570'] },
+};
+const GOAT_COLS = [['#f4efe6', '#d8cfc0'], ['#e8dcc4', '#c9b796'], ['#8a5a3b', '#6b4329'], ['#3b3330', '#262120'], ['#d9c7a6', '#b59e78'], ['#f4efe6', '#8a5a3b']];
+
+let world, goats, herder, cam = { y: 0 }, time = 0, particles = [], endTimer = 0, state = 'menu', hintT = 0;
+const keys = {}, pointer = { active: false, sx: 0, sy: 0, ax: 0, ay: 0, stick: false };
+const STICK_R = 55;
+
+function bucketize() { return []; }
+function addB(arr, o) { const i = Math.floor(o.y / 200); (arr[i] || (arr[i] = [])).push(o); }
+function eachB(arr, y0, y1, fn) { for (let i = Math.max(0, Math.floor(y0 / 200)); i <= Math.floor(y1 / 200); i++) { const b = arr[i]; if (b) for (const o of b) fn(o); } }
+
+function inPatch(x, y, pad = 0) { for (const p of world.patches) { const dx = x - p.x, dy = y - p.y; if (dx * dx + dy * dy < (p.r + pad) ** 2) return p; } return null; }
+
+function buildWorld(R) {
+  world = { patches: [], speck: bucketize(), pebble: bucketize(), tree: bucketize(), rock: bucketize() };
+  const pick = () => { const v = R(); return v < .45 ? 'meadow' : v < .7 ? 'clover' : v < .9 ? 'flowers' : 'bitter'; };
+  function addPatch(y, side, type) {
+    const r = 55 + R() * 30;
+    const x = clamp(trailX(y) + side * (HW + r * 0.45), r * 0.7, WW - r * 0.7);
+    const p = { x, y, r, type, tufts: [] };
+    const n = Math.floor(r * r / 85);
+    for (let i = 0; i < n; i++) {
+      const a = R() * Math.PI * 2, d = Math.sqrt(R()) * (r - 6);
+      const T = TYPES[type];
+      p.tufts.push({ x: x + Math.cos(a) * d, y: y + Math.sin(a) * d, amt: 1, rot: R() * 6.28, fl: T.flecks && R() < .6 ? T.flecks[Math.floor(R() * T.flecks.length)] : null });
+    }
+    world.patches.push(p);
+  }
+  for (let y = 520; y < PEN.y0 - 380; y += 290 + R() * 90) {
+    const side = R() < .5 ? -1 : 1;
+    addPatch(y, side, pick());
+    if (R() < .45) addPatch(y + R() * 60 - 30, -side, R() < .6 ? 'bitter' : pick());
+  }
+  for (let i = 0; i < 5200; i++) addB(world.speck, { x: -400 + R() * 1400, y: R() * WH, c: R() < .5 ? '#5a8a36' : (R() < .5 ? '#46702a' : '#6d9a44'), a: R() * 6.28 });
+  for (let i = 0; i < 700; i++) { const y = R() * PEN.y0; addB(world.pebble, { x: trailX(y) + (R() - .5) * HW * 1.8, y, r: 1 + R() * 2.4, c: R() < .5 ? '#bfa274' : '#e3cfa2' }); }
+  const okSpot = (x, y, m) => Math.abs(x - trailX(y)) > HW + m && !inPatch(x, y, m) && !(x > PEN.x0 - 60 && x < PEN.x1 + 60 && y > PEN.y0 - 90) && y > 40;
+  for (let i = 0; i < 900; i++) {
+    const x = -400 + R() * 1400, y = R() * WH, r = 16 + R() * 18;
+    if (!okSpot(x, y, r + 18)) continue;
+    addB(world.tree, { x, y, r, hue: R(), kind: R() < .35 ? 'pine' : 'round' });
+  }
+  for (let i = 0; i < 160; i++) {
+    const x = R() * WW, y = R() * WH, r = 5 + R() * 9;
+    if (!okSpot(x, y, r + 6)) continue;
+    addB(world.rock, { x, y, r, s: .6 + R() * .3 });
+  }
+}
+
+function newGame() {
+  const R = rng((Math.random() * 1e9) | 0);
+  buildWorld(R);
+  goats = [];
+  for (let i = 0; i < 12; i++) {
+    goats.push({ x: trailX(260) + (R() - .5) * 100, y: 200 + R() * 120, vx: 0, vy: 0, h: Math.PI / 2, full: .42 + R() * .15,
+      col: GOAT_COLS[i % GOAT_COLS.length], spots: R() < .35, wa: R() * 6.28, walk: R() * 6, eating: false, target: null, retarget: 0,
+      sick: 0, alarm: 0, penned: false, bleat: 2 + R() * 6, size: .9 + R() * .2, horn: R() < .75, beard: R() < .5 });
+  }
+  herder = { x: trailX(120), y: 110, vx: 0, vy: 0, face: Math.PI / 2, walk: 0, reach: .55 };
+  cam.y = 0; time = 0; particles = []; endTimer = 0; hintT = 7; state = 'play';
+}
+
+const belly = g => Math.min(1, g.full / .97);
+function onGround(x, y) { return Math.abs(x - trailX(y)) < HW + 4 || inPatch(x, y) || (x > PEN.x0 && x < PEN.x1 && y > PEN.y0 - 30); }
+
+function puff(x, y, text, color) { particles.push({ x, y, vx: (Math.random() - .5) * 10, vy: -22, life: 1.3, max: 1.3, text, color }); }
+function crumb(x, y, color) { particles.push({ x, y, vx: (Math.random() - .5) * 30, vy: (Math.random() - .5) * 30, life: .5, max: .5, color, dot: true }); }
+
+function findTuft(g) {
+  let best = null, bd = 70 * 70;
+  for (const p of world.patches) {
+    if (Math.abs(p.y - g.y) > p.r + 95 || Math.abs(p.x - g.x) > p.r + 95) continue;
+    for (const t of p.tufts) {
+      if (t.amt < .08) continue;
+      const dx = t.x - g.x, dy = t.y - g.y, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = { t, p }; }
+    }
+  }
+  return best;
+}
+
+function updateGoat(g, dt) {
+  let ax = 0, ay = 0;
+  const dx = g.x - herder.x, dy = g.y - herder.y, d = Math.hypot(dx, dy) || 1;
+  // direct pressure: push away from the shepherd, blended with the way the shepherd is walking
+  const hs = Math.hypot(herder.vx, herder.vy), hm = Math.min(1, hs / HERD_SPEED);
+  let own = 0, pdx = dx / d, pdy = dy / d;
+  // walking toward a goat drives it; walking away (or sneaking slowly) leaves it be
+  const toward = hs > 5 ? (herder.vx * dx + herder.vy * dy) / (hs * d) : 0;
+  const fr = FEAR_R * herder.reach, dr = toward > 0 ? DRIVE_R * herder.reach : 0;
+  if (d < Math.max(fr, dr)) {
+    own = Math.max(1 - d / fr, dr ? (1 - d / dr) * .8 * toward : 0, 0);
+    let px = dx / d * .55, py = dy / d * .55;
+    if (toward > 0) { px += herder.vx / hs * .8 * hm * toward; py += herder.vy / hs * .8 * hm * toward; }
+    let pl = Math.hypot(px, py) || 1; px /= pl; py /= pl;
+    // goats prefer the path: sideways pushes mostly turn into along-the-trail movement
+    if (!g.penned && !inPatch(g.x, g.y)) {
+      const ttx = (trailX(g.y + 6) - trailX(g.y - 6)) / 12, ttl = Math.hypot(ttx, 1), Tx = ttx / ttl, Ty = 1 / ttl;
+      const along = px * Tx + py * Ty, latx = px - along * Tx, laty = py - along * Ty;
+      px = along * Tx + latx * .3; py = along * Ty + laty * .3;
+      pl = Math.hypot(px, py) || 1; px /= pl; py /= pl;
+    }
+    pdx = px; pdy = py;
+    ax += px * (.35 + own) * 380; ay += py * (.35 + own) * 380;
+  }
+  // herd instinct: alarm spreads through the flock, and they move together
+  let cx = 0, cy = 0, n = 0, avx = 0, avy = 0, aw = 0, near = 0;
+  for (const o of goats) {
+    if (o === g || o.penned !== g.penned) continue;
+    const ox = o.x - g.x, oy = o.y - g.y, od = Math.hypot(ox, oy);
+    if (od < 100) { cx += o.x; cy += o.y; n++; }
+    if (od < 110) { const w = (o.alarm || 0); avx += o.vx * w; avy += o.vy * w; aw += w; near = Math.max(near, w * (1 - od / 200)); }
+    if (od < 18 && od > 0) { ax -= ox / od * (18 - od) * 14; ay -= oy / od * (18 - od) * 14; }
+  }
+  const fear = Math.max(own, near * .9);
+  g.alarm += (fear - (g.alarm || 0)) * Math.min(1, dt * 8) || 0;
+  if (n) {
+    ax += (cx / n - g.x) * (.6 + fear * .4);
+    ay += (cy / n - g.y) * (.6 + fear * .4);
+  }
+  if (aw > 0) { ax += (avx / aw - g.vx) * 2.2 * fear; ay += (avy / aw - g.vy) * 2.2 * fear; }
+  // when driven, goats follow the trail like a path and funnel toward the pen gate
+  if (!g.penned && fear > .08) {
+    const tx = (trailX(g.y + 6) - trailX(g.y - 6)) / 12, tl = Math.hypot(tx, 1);
+    const sgn = (aw > 0 && own < .05 ? (avx / aw) * tx + (avy / aw) : pdx * tx + pdy) >= 0 ? 1 : -1;
+    ax += tx / tl * sgn * 70 * fear; ay += 1 / tl * sgn * 70 * fear;
+    const off = trailX(g.y) - g.x;
+    if (Math.abs(off) > HW - 20 && !inPatch(g.x, g.y)) ax += Math.sign(off) * Math.min(1, (Math.abs(off) - HW + 20) / 30) * 160 * Math.max(fear, .3);
+    if (g.y > PEN.y0 - 260) { const k = 1 - (PEN.y0 - g.y) / 260; ax += clamp(300 - g.x, -80, 80) * 2.2 * k * Math.max(fear, .25); }
+  }
+  g.eating = false;
+  if (g.penned) {
+    ax += ((PEN.x0 + PEN.x1) / 2 - g.x) * .08; ay += (PEN.y1 - 50 - g.y) * .08;
+  } else {
+    g.full = Math.max(0, g.full - .004 * dt);
+    if (g.full >= 1) g.hungry = false; else if (g.full < .97) g.hungry = true;
+    if (fear < .15 && g.hungry) {
+      g.retarget -= dt;
+      if (!g.target || g.target.t.amt < .05 || g.retarget <= 0) { g.target = findTuft(g); g.retarget = .6; }
+      if (g.target) {
+        const t = g.target.t, tx = t.x - g.x, ty = t.y - g.y, td = Math.hypot(tx, ty);
+        if (td > 6) { ax += tx / td * 70; ay += ty / td * 70; }
+        else {
+          g.eating = true;
+          const val = TYPES[g.target.p.type].value, bite = Math.min(t.amt, .55 * dt);
+          t.amt -= bite;
+          if (val > 0) g.full = Math.min(1, g.full + bite * .24 * val);
+          else { g.full = Math.max(0, g.full - bite * .2); if (g.sick < 1) puff(g.x, g.y - 14, 'bleh', '#c9a8e0'); g.sick = Math.min(7, g.sick + bite * 9); }
+          if (Math.random() < dt * 4) crumb(g.x + Math.cos(g.h) * 13, g.y + Math.sin(g.h) * 13, TYPES[g.target.p.type].blade);
+        }
+      }
+    } else g.target = null;
+  }
+  g.wa += (Math.random() - .5) * dt * 4;
+  ax += Math.cos(g.wa) * 12 * (1 - fear); ay += Math.sin(g.wa) * 12 * (1 - fear);
+
+  g.vx += ax * dt; g.vy += ay * dt;
+  const damp = Math.exp(-(g.eating ? 10 : 2.5) * dt); g.vx *= damp; g.vy *= damp;
+  let max = (24 + Math.min(1, fear * 1.4) * 100) * (onGround(g.x, g.y) ? 1 : .55) * (g.sick > 0 ? .6 : 1);
+  const sp = Math.hypot(g.vx, g.vy);
+  if (sp > max) { g.vx *= max / sp; g.vy *= max / sp; }
+  if (g.sick > 0) { g.sick -= dt; if (Math.random() < dt * 1.5) crumb(g.x, g.y - 10, '#9a6bb8'); }
+
+  let nx = g.x + g.vx * dt, ny = g.y + g.vy * dt;
+  if (g.penned) {
+    nx = clamp(nx, PEN.x0 + 12, PEN.x1 - 12); ny = clamp(ny, PEN.y0 + 16, PEN.y1 - 12);
+  } else {
+    // stone wall runs the full width at the pen's top edge; the gate is the only way through
+    const wallY = PEN.y0 - 8, gateL = PEN.g0 + 8, gateR = PEN.g1 - 8;
+    if (ny > wallY) {
+      if (g.y <= wallY && (nx < gateL || nx > gateR)) { ny = wallY; if (g.vy > 0) { g.vx += Math.sign(300 - nx) * g.vy * .9; g.vy = 0; } }
+      else if (g.y > wallY) { nx = clamp(nx, gateL, gateR); }
+      if (ny > PEN.y0 + 18) { g.penned = true; g.target = null; puff(nx, ny - 14, 'home!', '#ffe9a6'); }
+    }
+    nx = clamp(nx, 8, WW - 8); ny = clamp(ny, 20, WH - 20);
+  }
+  g.x = nx; g.y = ny;
+  const s2 = Math.hypot(g.vx, g.vy);
+  if (s2 > 3) {
+    let target = Math.atan2(g.vy, g.vx), diff = ((target - g.h + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    g.h += diff * Math.min(1, dt * 6);
+  }
+  g.walk += s2 * dt * .35;
+  g.bleat -= dt;
+  if (g.bleat < 0) { g.bleat = 4 + Math.random() * 9; if (fear > .3 || Math.random() < .3) puff(g.x, g.y - 14, 'baa', '#ffffff'); }
+}
+
+function update(dt) {
+  if (state !== 'play') return;
+  time += dt; hintT -= dt;
+  let kx = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+  let ky = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+  if (kx || ky) { const l = Math.hypot(kx, ky); herder.vx = kx / l * HERD_SPEED; herder.vy = ky / l * HERD_SPEED; }
+  else if (pointer.active && pointer.stick) {
+    const dx = pointer.sx - pointer.ax, dy = pointer.sy - pointer.ay, d = Math.hypot(dx, dy);
+    if (d > 6) { const m = Math.min(1, (d - 6) / (STICK_R - 6)); herder.vx = dx / d * HERD_SPEED * m; herder.vy = dy / d * HERD_SPEED * m; }
+    else { const k = Math.exp(-12 * dt); herder.vx *= k; herder.vy *= k; }
+  }
+  else if (pointer.active) {
+    const tx = (pointer.sx - offX) / scale, ty = pointer.sy / scale + cam.y;
+    const dx = tx - herder.x, dy = ty - herder.y, d = Math.hypot(dx, dy), sp = Math.min(HERD_SPEED, d * 4);
+    if (d > 2) { herder.vx = dx / d * sp; herder.vy = dy / d * sp; } else herder.vx = herder.vy = 0;
+  } else { const k = Math.exp(-12 * dt); herder.vx *= k; herder.vy *= k; }
+  herder.x = clamp(herder.x + herder.vx * dt, 6, WW - 6);
+  herder.y = clamp(herder.y + herder.vy * dt, 20, WH - 20);
+  const hs = Math.hypot(herder.vx, herder.vy);
+  if (hs > 5) herder.face = Math.atan2(herder.vy, herder.vx);
+  // moving slowly is calm (small reach); striding out is loud (full reach)
+  const want = .55 + .45 * clamp((hs / HERD_SPEED - .35) / .45, 0, 1);
+  herder.reach += (want - herder.reach) * Math.min(1, dt * 4);
+  herder.walk += hs * dt * .12;
+
+  for (const g of goats) updateGoat(g, dt);
+
+  let cy = 0, cn = 0;
+  for (const g of goats) if (!g.penned) { cy += g.y; cn++; }
+  const focus = cn ? herder.y * .65 + (cy / cn) * .35 : herder.y;
+  const viewH = H / scale;
+  const target = clamp(focus - viewH * .42, 0, Math.max(0, WH - viewH));
+  cam.y += (target - cam.y) * Math.min(1, dt * 3);
+
+  for (const p of particles) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; if (!p.text) { p.vx *= .9; p.vy *= .9; } }
+  particles = particles.filter(p => p.life > 0);
+
+  const allHome = goats.every(g => g.penned);
+  if (allHome || time >= TOTAL) { endTimer += dt; if (endTimer > (allHome ? 1.2 : 0)) finish(allHome); }
+}
+
+function finish() {
+  state = 'end';
+  const home = goats.filter(g => g.penned);
+  const avg = home.length ? home.reduce((s, g) => s + belly(g), 0) / home.length : 0;
+  const score = Math.round(home.length / goats.length * 50 + avg * home.length / goats.length * 50);
+  const stars = score >= 85 ? 3 : score >= 60 ? 2 : score >= 30 ? 1 : 0;
+  const line = home.length === goats.length
+    ? (avg > .8 ? 'Every goat home with a round belly.' : 'Every goat home, though some went to bed peckish.')
+    : home.length === 0 ? 'The sun set on an empty pen. The goats are camping out tonight.'
+    : `${goats.length - home.length} goat${goats.length - home.length > 1 ? 's are' : ' is'} still out on the mountain.`;
+  document.getElementById('endCard').innerHTML = `
+    <h1>${stars === 3 ? 'Fine herding' : stars >= 1 ? 'Home at dusk' : 'Lost light'}</h1>
+    <div class="stars" aria-label="${stars} of 3 stars">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</div>
+    <p>${line}</p>
+    <p class="small">Goats home: ${home.length} of ${goats.length}<br>Average fullness: ${Math.round(avg * 100)}%<br>Score: ${score} / 100</p>
+    <button id="againBtn">Walk the trail again</button>`;
+  document.getElementById('end').hidden = false;
+  document.getElementById('againBtn').onclick = () => { document.getElementById('end').hidden = true; newGame(); };
+  document.getElementById('againBtn').focus();
+}
+
+/* ---------- drawing ---------- */
+function ell(x, y, rx, ry, rot = 0) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); ctx.fill(); }
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+function drawTrail(y0, y1) {
+  const yEnd = Math.min(y1, PEN.y0 + 10), yStart = Math.max(0, y0);
+  if (yStart >= yEnd) return;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const path = (off) => { ctx.beginPath(); for (let y = yStart; y <= yEnd + 16; y += 16) { const yy = Math.min(y, yEnd); const x = trailX(yy) + off; y === yStart ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy); } };
+  path(0); ctx.strokeStyle = '#a3865a'; ctx.lineWidth = HW * 2 + 10; ctx.stroke();
+  ctx.strokeStyle = '#d4bb88'; ctx.lineWidth = HW * 2; ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,118,74,.35)'; ctx.lineWidth = 7;
+  path(-24); ctx.stroke(); path(24); ctx.stroke();
+  eachB(world.pebble, y0, y1, p => { ctx.fillStyle = p.c; ell(p.x, p.y, p.r, p.r * .75); });
+}
+
+function drawPatch(p) {
+  const T = TYPES[p.type];
+  const left = p.tufts.reduce((s, t) => s + t.amt, 0) / p.tufts.length;
+  const grd = ctx.createRadialGradient(p.x, p.y, p.r * .2, p.x, p.y, p.r + 8);
+  ctx.globalAlpha = .4 + left * .6;
+  grd.addColorStop(0, T.base); grd.addColorStop(.8, T.base); grd.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grd; ell(p.x, p.y, p.r + 8, p.r + 8);
+  ctx.globalAlpha = 1;
+  ctx.lineCap = 'round'; ctx.lineWidth = 1.6; ctx.strokeStyle = T.blade;
+  ctx.beginPath();
+  for (const t of p.tufts) {
+    if (t.amt < .05) continue;
+    const L = 2 + t.amt * 6;
+    for (let k = 0; k < 3; k++) { const a = t.rot + k * 2.1; ctx.moveTo(t.x, t.y); ctx.lineTo(t.x + Math.cos(a) * L, t.y + Math.sin(a) * L); }
+  }
+  ctx.stroke();
+  for (const t of p.tufts) {
+    if (t.amt < .05) { ctx.fillStyle = 'rgba(120,96,58,.5)'; ell(t.x, t.y, 1.5, 1.2); continue; }
+    if (t.fl && t.amt > .3) { ctx.fillStyle = t.fl; ell(t.x, t.y, 1.4 + t.amt * 1.6, 1.4 + t.amt * 1.6); }
+  }
+}
+
+function drawPenGround() {
+  ctx.fillStyle = '#c9a865'; ctx.fillRect(PEN.x0, PEN.y0, PEN.x1 - PEN.x0, PEN.y1 - PEN.y0);
+  ctx.fillStyle = 'rgba(160,128,70,.5)';
+  for (let i = 0; i < 60; i++) { const x = PEN.x0 + ((i * 53) % 210) + 5, y = PEN.y0 + ((i * 37) % 220) + 5; ctx.fillRect(x, y, 6, 1.5); }
+  ctx.fillStyle = '#e2c56d'; ell(300, PEN.y1 - 40, 34, 18);
+  ctx.fillStyle = '#d1b055'; ell(300, PEN.y1 - 43, 24, 11);
+  ctx.strokeStyle = '#b8963f'; ctx.lineWidth = 1;
+  for (let i = 0; i < 14; i++) { const a = i * .9; ctx.beginPath(); ctx.moveTo(300 + Math.cos(a) * 10, PEN.y1 - 42 + Math.sin(a) * 6); ctx.lineTo(300 + Math.cos(a) * 28, PEN.y1 - 40 + Math.sin(a) * 14); ctx.stroke(); }
+}
+function drawWall(y0, y1) {
+  const wy = PEN.y0;
+  if (wy < y0 - 20 || wy > y1 + 20) return;
+  const stones = (a, b) => {
+    for (let x = a; x < b; x += 13) {
+      const j = Math.sin(x * 12.9898) * 43758.5453, r = j - Math.floor(j);
+      ctx.fillStyle = 'rgba(0,0,0,.2)'; ell(x + 2, wy + 3, 8, 6);
+      ctx.fillStyle = r < .5 ? '#8f918a' : '#a3a59d'; ell(x, wy + (r - .5) * 3, 7.5 + r * 2, 6);
+      ctx.fillStyle = 'rgba(255,255,255,.18)'; ell(x - 2, wy - 2, 3, 2);
+    }
+  };
+  stones(-500, PEN.x0 - 4); stones(PEN.x1 + 10, WW + 500);
+}
+function drawFence() {
+  ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(PEN.g0, PEN.y0); ctx.lineTo(PEN.x0, PEN.y0); ctx.lineTo(PEN.x0, PEN.y1); ctx.lineTo(PEN.x1, PEN.y1); ctx.lineTo(PEN.x1, PEN.y0); ctx.lineTo(PEN.g1, PEN.y0);
+  ctx.stroke();
+  ctx.fillStyle = '#4e331c';
+  const post = (x, y) => { ctx.beginPath(); ctx.arc(x, y, 4.2, 0, 7); ctx.fill(); };
+  for (let x = PEN.x0; x <= PEN.x1; x += 22) { if (x <= PEN.g0 || x >= PEN.g1) post(x, PEN.y0); post(x, PEN.y1); }
+  for (let y = PEN.y0; y <= PEN.y1; y += 22) { post(PEN.x0, y); post(PEN.x1, y); }
+  post(PEN.g0, PEN.y0); post(PEN.g1, PEN.y0);
+  ctx.fillStyle = 'rgba(255,240,200,.85)'; ctx.font = '600 13px Fredoka, ui-rounded, system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('pen', 300, PEN.y0 - 10);
+}
+
+function drawGoat(g, t) {
+  ctx.save(); ctx.translate(g.x, g.y);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ell(2, 3, 13 * g.size, 8.5 * g.size);
+  ctx.rotate(g.h); ctx.scale(g.size, g.size);
+  if (g.sick > 0) ctx.rotate(Math.sin(t * 9 + g.wa) * .12);
+  const belly = 5.5 + g.full * 3.5, sw = Math.sin(g.walk) * 2.4;
+  const [c1, c2] = g.col;
+  ctx.strokeStyle = '#3a2f26'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(6, -belly + 1); ctx.lineTo(6 + sw, -belly - 3);
+  ctx.moveTo(6, belly - 1); ctx.lineTo(6 - sw, belly + 3);
+  ctx.moveTo(-6, -belly + 1); ctx.lineTo(-6 - sw, -belly - 3);
+  ctx.moveTo(-6, belly - 1); ctx.lineTo(-6 + sw, belly + 3);
+  ctx.stroke();
+  ctx.fillStyle = c2; ell(-12, 0, 3, 2);
+  ctx.fillStyle = c1; ell(0, 0, 12, belly);
+  if (g.spots) { ctx.fillStyle = '#8a5a3b'; ell(-3, -2, 4, 2.5, .4); ell(4, 2, 3, 2, -.3); }
+  ctx.fillStyle = c2; ell(-1, 0, 8, belly * .45);
+  const hx = 13 + (g.eating ? 1 + Math.sin(t * 14 + g.wa) * 1.3 : 0), hs = g.eating ? .85 : 1;
+  ctx.fillStyle = c2; ell(hx - 3, -4.5 * hs, 3.2, 1.6, -.5); ell(hx - 3, 4.5 * hs, 3.2, 1.6, .5);
+  ctx.fillStyle = c1; ell(hx, 0, 6 * hs, 4.4 * hs);
+  if (g.horn) {
+    ctx.strokeStyle = '#7d6d5a'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(hx - 1, -2); ctx.quadraticCurveTo(hx - 6, -4, hx - 8, -1.5);
+    ctx.moveTo(hx - 1, 2); ctx.quadraticCurveTo(hx - 6, 4, hx - 8, 1.5); ctx.stroke();
+  }
+  ctx.fillStyle = '#2a211b'; ell(hx + 2, -2, .9, .9); ell(hx + 2, 2, .9, .9);
+  if (g.beard) { ctx.fillStyle = c2; ell(hx + 5.5 * hs, 0, 1.8, 1.3); }
+  ctx.restore();
+  if (g.sick > 0) {
+    ctx.strokeStyle = 'rgba(170,120,210,.8)'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(g.x, g.y - 15, 3.5, t * 4, t * 4 + 4.5); ctx.stroke();
+  }
+}
+
+function drawHerder(t) {
+  const h = herder;
+  ctx.save(); ctx.translate(h.x, h.y);
+  ctx.fillStyle = 'rgba(0,0,0,.2)'; ell(2, 3, 12, 10);
+  ctx.rotate(h.face);
+  const sw = Math.sin(h.walk) * 3;
+  ctx.fillStyle = '#3d4a54'; ell(sw, -5, 4, 3); ell(-sw, 5, 4, 3);
+  ctx.fillStyle = '#b2533a'; ell(0, 0, 8, 10);
+  ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-6, 11); ctx.lineTo(18, 11); ctx.arc(18, 7, 4, Math.PI / 2, -Math.PI / 2, true); ctx.stroke();
+  ctx.fillStyle = '#7b5a36'; ell(0, 0, 9.5, 9.5);
+  ctx.fillStyle = '#5e4227'; ell(0, 0, 5.5, 5.5);
+  ctx.fillStyle = '#e7b94c'; ctx.fillRect(-1, -5.5, 2, 11);
+  ctx.restore();
+}
+
+function drawTrees(y0, y1, layer) {
+  eachB(world.tree, y0 - 40, y1 + 40, tr => {
+    if (layer === 0) { ctx.fillStyle = 'rgba(20,40,15,.28)'; ell(tr.x + 7, tr.y + 9, tr.r * 1.05, tr.r * .9); return; }
+    if (tr.kind === 'pine') {
+      const c = tr.hue < .5 ? ['#2f5a33', '#3e7041', '#4f8550'] : ['#2b5240', '#386650', '#4a7c61'];
+      for (let i = 0; i < 3; i++) {
+        const r = tr.r * (1 - i * .28); ctx.fillStyle = c[i];
+        ctx.beginPath();
+        for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2 + tr.hue, rr = k % 2 ? r * .7 : r; ctx.lineTo(tr.x - i * 2 + Math.cos(a) * rr, tr.y - i * 2 + Math.sin(a) * rr); }
+        ctx.closePath(); ctx.fill();
+      }
+    } else {
+      const c = tr.hue < .5 ? ['#3f6b2c', '#507f36', '#679a45'] : ['#4a6a24', '#5c7f2c', '#76973a'];
+      ctx.fillStyle = c[0]; ell(tr.x, tr.y, tr.r, tr.r);
+      ctx.fillStyle = c[1]; ell(tr.x - tr.r * .15, tr.y - tr.r * .15, tr.r * .75, tr.r * .75);
+      ctx.fillStyle = c[2]; ell(tr.x - tr.r * .3, tr.y - tr.r * .32, tr.r * .38, tr.r * .38);
+    }
+  });
+}
+
+function drawWorld(t) {
+  const viewH = H / scale, y0 = cam.y - 40, y1 = cam.y + viewH + 40;
+  ctx.setTransform(DPR * scale, 0, 0, DPR * scale, DPR * offX, -DPR * scale * cam.y);
+  eachB(world.speck, y0, y1, s => { ctx.fillStyle = s.c; ctx.fillRect(s.x, s.y, 3, 1.4); });
+  ctx.fillStyle = 'rgba(30,50,20,.35)';
+  ctx.fillRect(-2000, y0, 2000, y1 - y0); ctx.fillRect(WW, y0, 2000, y1 - y0);
+  drawTrail(y0, y1);
+  for (const p of world.patches) if (p.y + p.r > y0 && p.y - p.r < y1) drawPatch(p);
+  if (PEN.y1 > y0 && PEN.y0 < y1) drawPenGround();
+  eachB(world.rock, y0, y1, r => {
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ell(r.x + 2, r.y + 2, r.r, r.r * r.s);
+    ctx.fillStyle = '#8d8f88'; ell(r.x, r.y, r.r, r.r * r.s);
+    ctx.fillStyle = '#a9aba3'; ell(r.x - r.r * .25, r.y - r.r * .25, r.r * .5, r.r * .35);
+  });
+  drawTrees(y0, y1, 0);
+
+  {
+    // reach ring: pale when sneaking, gold when striding; drawn in screen-pixel widths so it stays crisp on phones
+    const rr = FEAR_R * herder.reach, loud = clamp((herder.reach - .55) / .45, 0, 1), px = 1 / scale;
+    const col = loud > .5 ? '231,185,76' : '235,244,250';
+    ctx.fillStyle = `rgba(${col},${.07 + loud * .06})`;
+    ctx.beginPath(); ctx.arc(herder.x, herder.y, rr, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 5 * px; ctx.strokeStyle = 'rgba(30,40,25,.35)'; ctx.stroke();
+    ctx.lineWidth = 2.5 * px; ctx.strokeStyle = `rgba(${col},.85)`;
+    ctx.setLineDash([10 * px, 7 * px]); ctx.lineDashOffset = -t * 12 * px * (.3 + loud);
+    ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
+  }
+  if (pointer.active && !pointer.stick && state === 'play') {
+    const tx = (pointer.sx - offX) / scale, ty = pointer.sy / scale + cam.y;
+    ctx.strokeStyle = 'rgba(231,185,76,.7)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(tx, ty, 8 + Math.sin(t * 8) * 1.5, 0, Math.PI * 2); ctx.stroke();
+  }
+  const ents = goats.filter(g => g.y > y0 - 20 && g.y < y1 + 20).map(g => ({ y: g.y, g }));
+  ents.push({ y: herder.y, h: true });
+  ents.sort((a, b) => a.y - b.y);
+  for (const e of ents) e.h ? drawHerder(t) : drawGoat(e.g, t);
+  if (PEN.y1 > y0 && PEN.y0 < y1) drawFence();
+  drawWall(y0, y1);
+  ctx.globalAlpha = .93; drawTrees(y0, y1, 1); ctx.globalAlpha = 1;
+
+  ctx.textAlign = 'center'; ctx.font = '600 12px Fredoka, ui-rounded, system-ui, sans-serif';
+  for (const p of particles) {
+    const a = Math.min(1, p.life / p.max * 1.6); ctx.globalAlpha = a;
+    if (p.dot) { ctx.fillStyle = p.color; ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4); }
+    else { ctx.fillStyle = 'rgba(40,30,20,.55)'; ctx.fillText(p.text, p.x + 1, p.y + 1); ctx.fillStyle = p.color; ctx.fillText(p.text, p.x, p.y); }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawLight() {
+  const p = time / TOTAL;
+  if (p > .55) { ctx.fillStyle = `rgba(240,140,60,${Math.min(.22, (p - .55) * .7)})`; ctx.fillRect(0, 0, W, H); }
+  if (p > .78) { ctx.fillStyle = `rgba(25,30,70,${Math.min(.45, (p - .78) * 2)})`; ctx.fillRect(0, 0, W, H); }
+}
+
+function toScreen(x, y) { return [x * scale + offX, (y - cam.y) * scale]; }
+
+function drawHUD(t) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  drawLight();
+  // off-screen goat arrows
+  for (const g of goats) {
+    if (g.penned) continue;
+    const [sx, sy] = toScreen(g.x, g.y);
+    if (sy > -6 && sy < H + 6) continue;
+    const up = sy < 0, ex = clamp(sx, 16, W - 16), ey = up ? 56 : H - 14;
+    ctx.fillStyle = 'rgba(243,234,214,.9)';
+    ctx.beginPath();
+    if (up) { ctx.moveTo(ex, ey - 7); ctx.lineTo(ex - 6, ey + 3); ctx.lineTo(ex + 6, ey + 3); }
+    else { ctx.moveTo(ex, ey + 7); ctx.lineTo(ex - 6, ey - 3); ctx.lineTo(ex + 6, ey - 3); }
+    ctx.fill();
+  }
+  const font = s => `600 ${s}px Fredoka, ui-rounded, system-ui, sans-serif`;
+  const pill = (x, w) => { ctx.fillStyle = 'rgba(44,58,68,.82)'; rrect(x, 8, w, 34, 12); ctx.fill(); };
+  // fullness
+  const avg = goats.reduce((s, g) => s + belly(g), 0) / goats.length;
+  pill(8, 130);
+  ctx.fillStyle = '#f3ead6'; ctx.font = font(12); ctx.textAlign = 'left'; ctx.fillText('Bellies', 18, 22);
+  ctx.fillStyle = 'rgba(255,255,255,.15)'; rrect(18, 28, 110, 7, 3.5); ctx.fill();
+  ctx.fillStyle = avg > .7 ? '#8cc062' : avg > .4 ? '#e7b94c' : '#e46a5a'; rrect(18, 28, Math.max(7, 110 * avg), 7, 3.5); ctx.fill();
+  ctx.fillStyle = '#f3ead6'; ctx.textAlign = 'right'; ctx.fillText(Math.round(avg * 100) + '%', 128, 22);
+  // sun timer
+  const left = Math.max(0, TOTAL - time), p = time / TOTAL;
+  pill(146, 92);
+  ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(166, 25, 9, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = p < .55 ? '#f0c93c' : p < .78 ? '#f09a4a' : '#9aa6e8';
+  ctx.beginPath(); ctx.arc(166, 25, 9, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - p)); ctx.stroke();
+  ctx.fillStyle = '#f3ead6'; ctx.font = font(15); ctx.textAlign = 'left';
+  ctx.fillText(`${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}`, 182, 30);
+  // penned
+  const home = goats.filter(g => g.penned).length;
+  const px = Math.max(246, W - 96);
+  pill(px, 88);
+  ctx.font = font(12); ctx.fillStyle = '#b9c3c9'; ctx.fillText('Home', px + 10, 22);
+  ctx.font = font(15); ctx.fillStyle = '#f3ead6'; ctx.fillText(`${home} / ${goats.length}`, px + 10, 37);
+  // minimap
+  const mx = W - 30, mt = 54, mh = Math.min(H - 80, 260), mw = 22;
+  ctx.fillStyle = 'rgba(44,58,68,.6)'; rrect(mx - 2, mt - 4, mw + 4, mh + 8, 8); ctx.fill();
+  const mapX = x => mx + (x / WW) * mw, mapY = y => mt + (y / WH) * mh;
+  ctx.strokeStyle = 'rgba(212,187,136,.8)'; ctx.lineWidth = 2;
+  ctx.beginPath(); for (let y = 0; y <= PEN.y0; y += 100) { y ? ctx.lineTo(mapX(trailX(y)), mapY(y)) : ctx.moveTo(mapX(trailX(y)), mapY(y)); } ctx.stroke();
+  for (const pt of world.patches) { const live = pt.tufts.some(q => q.amt > .1); ctx.fillStyle = live ? (pt.type === 'bitter' ? '#a77cc4' : '#9fd067') : 'rgba(160,140,100,.6)'; ctx.fillRect(mapX(pt.x) - 1.5, mapY(pt.y) - 1.5, 3, 3); }
+  ctx.fillStyle = '#c9a865'; ctx.fillRect(mapX(PEN.x0), mapY(PEN.y0), mapX(PEN.x1) - mapX(PEN.x0), Math.max(3, mapY(PEN.y1) - mapY(PEN.y0)));
+  ctx.strokeStyle = 'rgba(255,255,255,.45)'; ctx.lineWidth = 1;
+  ctx.strokeRect(mx - 1, mapY(cam.y), mw + 2, (H / scale / WH) * mh);
+  ctx.fillStyle = '#ffffff'; for (const g of goats) ctx.fillRect(mapX(g.x) - 1, mapY(g.y) - 1, 2, 2);
+  ctx.fillStyle = '#e46a5a'; ctx.beginPath(); ctx.arc(mapX(herder.x), mapY(herder.y), 2.6, 0, 7); ctx.fill();
+  // touch joystick
+  if (pointer.active && pointer.stick && state === 'play') {
+    const dx = pointer.sx - pointer.ax, dy = pointer.sy - pointer.ay, d = Math.hypot(dx, dy), k = d > STICK_R ? STICK_R / d : 1;
+    ctx.fillStyle = 'rgba(44,58,68,.35)'; ctx.beginPath(); ctx.arc(pointer.ax, pointer.ay, STICK_R, 0, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(243,234,214,.55)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = 'rgba(231,185,76,.85)'; ctx.beginPath(); ctx.arc(pointer.ax + dx * k, pointer.ay + dy * k, 20, 0, 7); ctx.fill();
+  }
+  // hint
+  if (hintT > 0 && state === 'play') {
+    ctx.globalAlpha = Math.min(1, hintT);
+    const msg = matchMedia('(pointer: coarse)').matches ? 'Slide your thumb to walk. Small slides sneak past goats.' : 'Hold the mouse to walk. Point close to sneak, far to drive.';
+    ctx.font = font(14); const w = ctx.measureText(msg).width + 24;
+    ctx.fillStyle = 'rgba(44,58,68,.85)'; rrect(W / 2 - w / 2, H - 58, w, 32, 12); ctx.fill();
+    ctx.fillStyle = '#f3ead6'; ctx.textAlign = 'center'; ctx.fillText(msg, W / 2, H - 37);
+    ctx.globalAlpha = 1;
+  }
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.033, (now - last) / 1000); last = now;
+  const t = now / 1000;
+  update(dt);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#5d863a'; ctx.fillRect(0, 0, W, H);
+  if (world) { drawWorld(t); drawHUD(t); }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- input ---------- */
+cv.addEventListener('pointerdown', e => {
+  if (pointer.active) return;
+  pointer.active = true; pointer.id = e.pointerId; pointer.stick = e.pointerType !== 'mouse';
+  pointer.sx = pointer.ax = e.offsetX; pointer.sy = pointer.ay = e.offsetY;
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e => {
+  if (!pointer.active || e.pointerId !== pointer.id) return;
+  pointer.sx = e.offsetX; pointer.sy = e.offsetY;
+  if (pointer.stick) {
+    // floating stick: if the thumb goes past the ring, drag the ring along so reversing stays quick
+    const dx = pointer.sx - pointer.ax, dy = pointer.sy - pointer.ay, d = Math.hypot(dx, dy);
+    if (d > STICK_R) { pointer.ax += dx / d * (d - STICK_R); pointer.ay += dy / d * (d - STICK_R); }
+  }
+});
+const stop = e => { if (!e || e.pointerId === pointer.id) pointer.active = false; };
+cv.addEventListener('pointerup', stop); cv.addEventListener('pointercancel', stop);
+window.addEventListener('keydown', e => { keys[e.code] = keys[e.key] = true; if (e.key.startsWith('Arrow')) e.preventDefault(); });
+window.addEventListener('keyup', e => { keys[e.code] = keys[e.key] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; pointer.active = false; });
+
+document.getElementById('startBtn').onclick = () => { document.getElementById('menu').hidden = true; newGame(); };
+
+// idle backdrop behind the menu
+(function preview() { const R = rng(7); buildWorld(R); goats = []; for (let i = 0; i < 12; i++) goats.push({ x: trailX(300) + (R() - .5) * 120, y: 220 + R() * 160, vx: 0, vy: 0, h: R() * 6, full: .6, col: GOAT_COLS[i % 6], spots: R() < .35, wa: 0, walk: 0, eating: R() < .5, sick: 0, penned: false, size: .9 + R() * .2, horn: R() < .75, beard: R() < .5 }); herder = { x: trailX(140), y: 140, vx: 0, vy: 0, face: Math.PI / 2, walk: 0, reach: .55 }; cam.y = 60; })();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
