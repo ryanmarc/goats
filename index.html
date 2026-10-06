@@ -87,7 +87,22 @@ const TYPES = {
 const GOAT_COLS = [['#f4efe6', '#d8cfc0'], ['#e8dcc4', '#c9b796'], ['#8a5a3b', '#6b4329'], ['#3b3330', '#262120'], ['#d9c7a6', '#b59e78'], ['#f4efe6', '#8a5a3b']];
 
 let world, goats, herder, cam = { y: 0 }, time = 0, particles = [], endTimer = 0, state = 'menu', hintT = 0;
-const keys = {}, pointer = { active: false, sx: 0, sy: 0, ax: 0, ay: 0, stick: false };
+const keys = {}, pointer = { active: false, sx: 0, sy: 0, ax: 0, ay: 0, stick: false, type: 'mouse' };
+
+/* ---------- metrics (Umami) ---------- */
+// Paste the website ID from your Umami dashboard to turn metrics on; empty means no tracking.
+const UMAMI_ID = 'a519b95e-893d-45b3-8684-6b37c584e645';
+if (UMAMI_ID) {
+  const s = document.createElement('script');
+  s.defer = true; s.src = 'https://cloud.umami.is/script.js'; s.dataset.websiteId = UMAMI_ID;
+  document.head.appendChild(s);
+}
+function track(name, data) { try { window.umami && window.umami.track(name, data); } catch (e) {} }
+let run = { n: 0, sick: 0, input: { touch: 0, mouse: 0, keys: 0 }, ended: true };
+function mainInput() {
+  const t = run.input, best = Object.keys(t).reduce((a, b) => t[a] >= t[b] ? a : b);
+  return t[best] > 0 ? best : 'none';
+}
 const STICK_R = 55;
 
 function bucketize() { return []; }
@@ -142,6 +157,8 @@ function newGame() {
   }
   herder = { x: trailX(120), y: 110, vx: 0, vy: 0, face: Math.PI / 2, walk: 0, reach: .55 };
   cam.y = 0; time = 0; particles = []; endTimer = 0; hintT = 7; state = 'play';
+  run = { n: run.n + 1, sick: 0, input: { touch: 0, mouse: 0, keys: 0 }, ended: false };
+  track('game-start', { play: run.n });
 }
 
 const belly = g => Math.min(1, g.full / .97);
@@ -229,7 +246,7 @@ function updateGoat(g, dt) {
           const val = TYPES[g.target.p.type].value, bite = Math.min(t.amt, .55 * dt);
           t.amt -= bite;
           if (val > 0) g.full = Math.min(1, g.full + bite * .24 * val);
-          else { g.full = Math.max(0, g.full - bite * .2); if (g.sick < 1) puff(g.x, g.y - 14, 'bleh', '#c9a8e0'); g.sick = Math.min(7, g.sick + bite * 9); }
+          else { g.full = Math.max(0, g.full - bite * .2); if (g.sick <= 0) run.sick++; if (g.sick < 1) puff(g.x, g.y - 14, 'bleh', '#c9a8e0'); g.sick = Math.min(7, g.sick + bite * 9); }
           if (Math.random() < dt * 4) crumb(g.x + Math.cos(g.h) * 13, g.y + Math.sin(g.h) * 13, TYPES[g.target.p.type].blade);
         }
       }
@@ -274,6 +291,8 @@ function update(dt) {
   time += dt; hintT -= dt;
   let kx = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
   let ky = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+  if (kx || ky) run.input.keys += dt;
+  else if (pointer.active) run.input[pointer.type === 'mouse' ? 'mouse' : 'touch'] += dt;
   if (kx || ky) { const l = Math.hypot(kx, ky); herder.vx = kx / l * HERD_SPEED; herder.vy = ky / l * HERD_SPEED; }
   else if (pointer.active && pointer.stick) {
     const dx = pointer.sx - pointer.ax, dy = pointer.sy - pointer.ay, d = Math.hypot(dx, dy);
@@ -320,6 +339,9 @@ function finish() {
     ? (avg > .8 ? 'Every goat home with a round belly.' : 'Every goat home, though some went to bed peckish.')
     : home.length === 0 ? 'The sun set on an empty pen. The goats are camping out tonight.'
     : `${goats.length - home.length} goat${goats.length - home.length > 1 ? 's are' : ' is'} still out on the mountain.`;
+  run.ended = true;
+  track('game-finish', { result: home.length === goats.length ? 'all-home' : 'sundown', home: home.length,
+    belly: Math.round(avg * 100), score, stars, secs: Math.round(time), sick: run.sick, input: mainInput(), play: run.n });
   document.getElementById('endCard').innerHTML = `
     <h1>${stars === 3 ? 'Fine herding' : stars >= 1 ? 'Home at dusk' : 'Lost light'}</h1>
     <div class="stars" aria-label="${stars} of 3 stars">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</div>
@@ -616,7 +638,7 @@ function frame(now) {
 /* ---------- input ---------- */
 cv.addEventListener('pointerdown', e => {
   if (pointer.active) return;
-  pointer.active = true; pointer.id = e.pointerId; pointer.stick = e.pointerType !== 'mouse';
+  pointer.active = true; pointer.id = e.pointerId; pointer.stick = e.pointerType !== 'mouse'; pointer.type = e.pointerType;
   pointer.sx = pointer.ax = e.offsetX; pointer.sy = pointer.ay = e.offsetY;
   cv.setPointerCapture(e.pointerId);
 });
@@ -633,6 +655,14 @@ const stop = e => { if (!e || e.pointerId === pointer.id) pointer.active = false
 cv.addEventListener('pointerup', stop); cv.addEventListener('pointercancel', stop);
 window.addEventListener('keydown', e => { keys[e.code] = keys[e.key] = true; if (e.key.startsWith('Arrow')) e.preventDefault(); });
 window.addEventListener('keyup', e => { keys[e.code] = keys[e.key] = false; });
+// leaving mid-walk counts as an abandon (sent once per game); visibilitychange is what fires reliably on phones
+function abandon() {
+  if (state !== 'play' || run.ended) return;
+  run.ended = true;
+  track('game-abandon', { secs: Math.round(time), home: goats.filter(g => g.penned).length, sick: run.sick, input: mainInput(), play: run.n });
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') abandon(); });
+window.addEventListener('pagehide', abandon);
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; pointer.active = false; });
 
 document.getElementById('startBtn').onclick = () => { document.getElementById('menu').hidden = true; newGame(); };
